@@ -1,0 +1,38 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: frontend
+  namespace: pipeline-monitor
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: frontend
+  template:
+    metadata:
+      labels:
+        app: frontend
+    spec:
+      imagePullSecrets:
+        - name: ghcr-secret
+      containers:
+        - name: pipeline-frontend
+          image: ghcr.io/peacedwk55/pipeline-frontend:v7
+          imagePullPolicy: Always
+          ports:
+            - containerPort: 3000
+          env:
+            - name: HOSTNAME
+              value: "0.0.0.0"
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: frontend
+  namespace: pipeline-monitor
+spec:
+  selector:
+    app: frontend
+  ports:
+    - port: 3000
+      targetPort: 3000

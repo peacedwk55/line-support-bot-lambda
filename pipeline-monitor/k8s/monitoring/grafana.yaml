@@ -1,0 +1,184 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: grafana-datasources
+  namespace: monitoring
+data:
+  datasources.yaml: |
+    apiVersion: 1
+    datasources:
+      - name: Prometheus
+        type: prometheus
+        url: http://prometheus:9090
+        isDefault: true
+        access: proxy
+        jsonData:
+          timeInterval: "15s"
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: grafana-dashboards-provider
+  namespace: monitoring
+data:
+  dashboards.yaml: |
+    apiVersion: 1
+    providers:
+      - name: default
+        folder: PipelineHub
+        type: file
+        options:
+          path: /etc/grafana/dashboards
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: grafana-dashboard-backend
+  namespace: monitoring
+data:
+  backend.json: |
+    {
+      "title": "PipelineHub Backend",
+      "uid": "pipelinehub-backend",
+      "schemaVersion": 38,
+      "refresh": "10s",
+      "panels": [
+        {
+          "id": 1,
+          "title": "Request Rate (req/s)",
+          "type": "timeseries",
+          "gridPos": { "x": 0, "y": 0, "w": 12, "h": 8 },
+          "targets": [{
+            "datasource": { "type": "prometheus" },
+            "expr": "sum(rate(http_requests_total[5m])) by (route, method)",
+            "legendFormat": "{{method}} {{route}}"
+          }]
+        },
+        {
+          "id": 2,
+          "title": "Error Rate (4xx/5xx req/s)",
+          "type": "timeseries",
+          "gridPos": { "x": 12, "y": 0, "w": 12, "h": 8 },
+          "targets": [{
+            "datasource": { "type": "prometheus" },
+            "expr": "sum(rate(http_requests_total{status_code=~\"4..|5..\"}[5m])) by (route, status_code)",
+            "legendFormat": "{{status_code}} {{route}}"
+          }]
+        },
+        {
+          "id": 3,
+          "title": "Response Duration p95 (seconds)",
+          "type": "timeseries",
+          "gridPos": { "x": 0, "y": 8, "w": 12, "h": 8 },
+          "targets": [{
+            "datasource": { "type": "prometheus" },
+            "expr": "histogram_quantile(0.95, sum(rate(http_request_duration_seconds_bucket[5m])) by (le, route))",
+            "legendFormat": "p95 {{route}}"
+          }]
+        },
+        {
+          "id": 4,
+          "title": "SSE Connections Total",
+          "type": "stat",
+          "gridPos": { "x": 12, "y": 8, "w": 6, "h": 8 },
+          "targets": [{
+            "datasource": { "type": "prometheus" },
+            "expr": "sse_connections_total",
+            "legendFormat": "SSE Connections"
+          }]
+        },
+        {
+          "id": 5,
+          "title": "Webhook Events Total",
+          "type": "stat",
+          "gridPos": { "x": 18, "y": 8, "w": 6, "h": 8 },
+          "targets": [{
+            "datasource": { "type": "prometheus" },
+            "expr": "webhook_events_total",
+            "legendFormat": "Webhook Events"
+          }]
+        },
+        {
+          "id": 6,
+          "title": "Node.js Memory (bytes)",
+          "type": "timeseries",
+          "gridPos": { "x": 0, "y": 16, "w": 12, "h": 8 },
+          "targets": [{
+            "datasource": { "type": "prometheus" },
+            "expr": "process_resident_memory_bytes{job=\"pipeline-backend\"}",
+            "legendFormat": "RSS Memory"
+          }]
+        },
+        {
+          "id": 7,
+          "title": "Event Loop Lag (seconds)",
+          "type": "timeseries",
+          "gridPos": { "x": 12, "y": 16, "w": 12, "h": 8 },
+          "targets": [{
+            "datasource": { "type": "prometheus" },
+            "expr": "nodejs_eventloop_lag_seconds{job=\"pipeline-backend\"}",
+            "legendFormat": "Event Loop Lag"
+          }]
+        }
+      ]
+    }
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: grafana
+  namespace: monitoring
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: grafana
+  template:
+    metadata:
+      labels:
+        app: grafana
+    spec:
+      containers:
+        - name: grafana
+          image: grafana/grafana:10.4.1
+          ports:
+            - containerPort: 3000
+          env:
+            - name: GF_SECURITY_ADMIN_USER
+              value: admin
+            - name: GF_SECURITY_ADMIN_PASSWORD
+              value: admin
+            - name: GF_AUTH_ANONYMOUS_ENABLED
+              value: "true"
+            - name: GF_AUTH_ANONYMOUS_ORG_ROLE
+              value: Viewer
+          volumeMounts:
+            - name: datasources
+              mountPath: /etc/grafana/provisioning/datasources
+            - name: dashboards-provider
+              mountPath: /etc/grafana/provisioning/dashboards
+            - name: dashboard-backend
+              mountPath: /etc/grafana/dashboards/backend.json
+              subPath: backend.json
+      volumes:
+        - name: datasources
+          configMap:
+            name: grafana-datasources
+        - name: dashboards-provider
+          configMap:
+            name: grafana-dashboards-provider
+        - name: dashboard-backend
+          configMap:
+            name: grafana-dashboard-backend
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: grafana
+  namespace: monitoring
+spec:
+  selector:
+    app: grafana
+  ports:
+    - port: 3000
+      targetPort: 3000
