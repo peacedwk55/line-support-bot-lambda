@@ -1,0 +1,22 @@
+# Dependencies
+node_modules/
+
+# Build artifact
+deploy.zip
+
+# Terraform state (contains sensitive data / API keys)
+terraform/.terraform/
+terraform/terraform.tfstate
+terraform/terraform.tfstate.backup
+terraform/.terraform.lock.hcl
+
+# Environment variables
+.env
+.env.local
+
+# Claude settings
+.claude/
+
+# OS
+.DS_Store
+Thumbs.db

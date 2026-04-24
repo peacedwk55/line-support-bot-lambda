@@ -1,0 +1,12 @@
+{
+  "name": "line-support-bot-lambda",
+  "version": "1.0.0",
+  "type": "module",
+  "main": "src/index.mjs",
+  "dependencies": {
+    "@aws-sdk/client-dynamodb": "^3.0.0",
+    "@aws-sdk/lib-dynamodb": "^3.0.0",
+    "@upstash/vector": "^1.0.0",
+    "axios": "^1.15.0"
+  }
+}
