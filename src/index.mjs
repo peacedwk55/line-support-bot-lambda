@@ -139,10 +139,66 @@ async function replyToLine(replyToken, text) {
     );
 }
 
+// ─── CORS Headers ────────────────────────────────────────────────────────────
+
+const CORS = {
+    "Access-Control-Allow-Origin": "*",
+    "Access-Control-Allow-Headers": "Content-Type",
+    "Access-Control-Allow-Methods": "POST, OPTIONS",
+};
+
+// ─── LIFF Web Chat Handler ───────────────────────────────────────────────────
+
+async function handleWebChat(event) {
+    if (event.requestContext?.http?.method === "OPTIONS") {
+        return { statusCode: 200, headers: CORS, body: "" };
+    }
+    let body;
+    try {
+        body = typeof event.body === "string" ? JSON.parse(event.body) : event.body;
+    } catch {
+        return { statusCode: 400, headers: CORS, body: JSON.stringify({ error: "Invalid JSON" }) };
+    }
+
+    const { userId, message } = body || {};
+    if (!userId || !message) {
+        return { statusCode: 400, headers: CORS, body: JSON.stringify({ error: "userId and message required" }) };
+    }
+
+    const history = await getHistory(userId);
+    const matches = await searchKnowledge(message);
+    const knowledgeContext = buildKnowledgeContext(matches);
+    if (matches.length > 0) {
+        console.log(`RAG (web): พบ ${matches.length} matches (scores: ${matches.map(m => m.score.toFixed(2)).join(", ")})`);
+    }
+
+    const systemWithKnowledge = SYSTEM_PROMPT + knowledgeContext;
+    history.push({ role: "user", content: message });
+    const messages = [{ role: "system", content: systemWithKnowledge }, ...history];
+    const reply = await askAI(messages) || "ขออภัย ลองใหม่อีกครั้งค่ะ";
+    history.push({ role: "assistant", content: reply });
+
+    await saveHistory(userId, history);
+
+    return {
+        statusCode: 200,
+        headers: { ...CORS, "Content-Type": "application/json" },
+        body: JSON.stringify({ reply }),
+    };
+}
+
 // ─── Lambda Handler ──────────────────────────────────────────────────────────
 
 export const handler = async (event) => {
-    // ตรวจ LINE signature ก่อน parse (API Gateway v2 ส่ง headers เป็น lowercase)
+    const path   = event.rawPath || "/";
+    const method = event.requestContext?.http?.method || "";
+
+    // LIFF Web Chat
+    if (path === "/chat") {
+        return handleWebChat(event);
+    }
+
+    // LINE Webhook — ตรวจ signature ก่อน parse
     const rawBody = event.body || "";
     const signature = event.headers?.["x-line-signature"] || "";
     if (!verifySignature(rawBody, signature)) {

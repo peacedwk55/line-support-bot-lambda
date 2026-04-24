@@ -109,6 +109,18 @@ resource "aws_apigatewayv2_route" "webhook" {
   target    = "integrations/${aws_apigatewayv2_integration.bot.id}"
 }
 
+resource "aws_apigatewayv2_route" "chat" {
+  api_id    = aws_apigatewayv2_api.bot.id
+  route_key = "POST /chat"
+  target    = "integrations/${aws_apigatewayv2_integration.bot.id}"
+}
+
+resource "aws_apigatewayv2_route" "chat_options" {
+  api_id    = aws_apigatewayv2_api.bot.id
+  route_key = "OPTIONS /chat"
+  target    = "integrations/${aws_apigatewayv2_integration.bot.id}"
+}
+
 resource "aws_apigatewayv2_stage" "default" {
   api_id      = aws_apigatewayv2_api.bot.id
   name        = "$default"
