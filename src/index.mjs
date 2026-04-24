@@ -160,25 +160,49 @@ async function handleWebChat(event) {
         return { statusCode: 400, headers: CORS, body: JSON.stringify({ error: "Invalid JSON" }) };
     }
 
-    const { userId, message } = body || {};
-    if (!userId || !message) {
-        return { statusCode: 400, headers: CORS, body: JSON.stringify({ error: "userId and message required" }) };
+    const { userId, message, imageBase64, mimeType } = body || {};
+    if (!userId) {
+        return { statusCode: 400, headers: CORS, body: JSON.stringify({ error: "userId required" }) };
     }
 
     const history = await getHistory(userId);
-    const matches = await searchKnowledge(message);
-    const knowledgeContext = buildKnowledgeContext(matches);
-    if (matches.length > 0) {
-        console.log(`RAG (web): พบ ${matches.length} matches (scores: ${matches.map(m => m.score.toFixed(2)).join(", ")})`);
+    let reply;
+
+    if (imageBase64) {
+        // Image flow: Vision → RAG → AI
+        const imageDescription = await describeImage(imageBase64, mimeType || "image/jpeg");
+        if (!imageDescription) {
+            reply = "ขออภัย ไม่สามารถอ่านรูปได้ค่ะ กรุณาลองส่งใหม่อีกครั้ง";
+        } else {
+            const matches = await searchKnowledge(imageDescription);
+            const knowledgeContext = buildKnowledgeContext(matches);
+            if (matches.length > 0) {
+                console.log(`RAG (web image): พบ ${matches.length} matches`);
+            }
+            const systemWithKnowledge = SYSTEM_PROMPT + knowledgeContext;
+            const userContent = `ผู้ใช้ส่งรูปภาพมา จากการวิเคราะห์รูปพบว่า: ${imageDescription}`;
+            history.push({ role: "user", content: userContent });
+            const messages = [{ role: "system", content: systemWithKnowledge }, ...history];
+            reply = await askAI(messages) || "ขออภัย ลองใหม่อีกครั้งค่ะ";
+            history.push({ role: "assistant", content: reply });
+            await saveHistory(userId, history);
+        }
+    } else if (message) {
+        // Text flow: RAG → AI
+        const matches = await searchKnowledge(message);
+        const knowledgeContext = buildKnowledgeContext(matches);
+        if (matches.length > 0) {
+            console.log(`RAG (web): พบ ${matches.length} matches (scores: ${matches.map(m => m.score.toFixed(2)).join(", ")})`);
+        }
+        const systemWithKnowledge = SYSTEM_PROMPT + knowledgeContext;
+        history.push({ role: "user", content: message });
+        const messages = [{ role: "system", content: systemWithKnowledge }, ...history];
+        reply = await askAI(messages) || "ขออภัย ลองใหม่อีกครั้งค่ะ";
+        history.push({ role: "assistant", content: reply });
+        await saveHistory(userId, history);
+    } else {
+        return { statusCode: 400, headers: CORS, body: JSON.stringify({ error: "message or imageBase64 required" }) };
     }
-
-    const systemWithKnowledge = SYSTEM_PROMPT + knowledgeContext;
-    history.push({ role: "user", content: message });
-    const messages = [{ role: "system", content: systemWithKnowledge }, ...history];
-    const reply = await askAI(messages) || "ขออภัย ลองใหม่อีกครั้งค่ะ";
-    history.push({ role: "assistant", content: reply });
-
-    await saveHistory(userId, history);
 
     return {
         statusCode: 200,
@@ -190,11 +214,13 @@ async function handleWebChat(event) {
 // ─── Lambda Handler ──────────────────────────────────────────────────────────
 
 export const handler = async (event) => {
-    const path   = event.rawPath || "/";
-    const method = event.requestContext?.http?.method || "";
+    // รองรับทั้ง payload format 1.0 (path/httpMethod) และ 2.0 (rawPath/requestContext.http.method)
+    const path   = event.rawPath || event.requestContext?.http?.path || event.path || "/";
+    const method = event.requestContext?.http?.method || event.httpMethod || "";
+    console.log("PATH:", path, "METHOD:", method);
 
     // LIFF Web Chat
-    if (path === "/chat") {
+    if (path === "/chat" || path.endsWith("/chat")) {
         return handleWebChat(event);
     }
 

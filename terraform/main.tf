@@ -94,13 +94,21 @@ resource "aws_lambda_function" "bot" {
 resource "aws_apigatewayv2_api" "bot" {
   name          = "${var.app_name}-api"
   protocol_type = "HTTP"
+
+  cors_configuration {
+    allow_origins = ["*"]
+    allow_methods = ["POST", "OPTIONS"]
+    allow_headers = ["content-type"]
+    max_age       = 300
+  }
 }
 
 resource "aws_apigatewayv2_integration" "bot" {
-  api_id             = aws_apigatewayv2_api.bot.id
-  integration_type   = "AWS_PROXY"
-  integration_uri    = aws_lambda_function.bot.invoke_arn
-  integration_method = "POST"
+  api_id                 = aws_apigatewayv2_api.bot.id
+  integration_type       = "AWS_PROXY"
+  integration_uri        = aws_lambda_function.bot.invoke_arn
+  integration_method     = "POST"
+  payload_format_version = "2.0"
 }
 
 resource "aws_apigatewayv2_route" "webhook" {
@@ -115,11 +123,6 @@ resource "aws_apigatewayv2_route" "chat" {
   target    = "integrations/${aws_apigatewayv2_integration.bot.id}"
 }
 
-resource "aws_apigatewayv2_route" "chat_options" {
-  api_id    = aws_apigatewayv2_api.bot.id
-  route_key = "OPTIONS /chat"
-  target    = "integrations/${aws_apigatewayv2_integration.bot.id}"
-}
 
 resource "aws_apigatewayv2_stage" "default" {
   api_id      = aws_apigatewayv2_api.bot.id

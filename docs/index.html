@@ -251,6 +251,26 @@
     }
     .send-btn:active  { transform: scale(0.9); }
     .send-btn:disabled { opacity: 0.45; cursor: not-allowed; }
+    .attach-btn {
+      width: 38px; height: 38px;
+      background: none;
+      border: 1.5px solid #e0e0e0;
+      border-radius: 50%;
+      color: #999;
+      cursor: pointer;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      transition: border-color 0.2s, color 0.2s;
+      flex-shrink: 0;
+    }
+    .attach-btn:hover { border-color: #e74c3c; color: #e74c3c; }
+    .bubble img {
+      max-width: 200px;
+      max-height: 200px;
+      border-radius: 10px;
+      display: block;
+    }
   </style>
 </head>
 <body>
@@ -285,6 +305,13 @@
   </div>
 
   <div class="input-bar">
+    <input type="file" id="fileInput" accept="image/*" style="display:none" onchange="handleFile(event)">
+    <button class="attach-btn" onclick="document.getElementById('fileInput').click()" title="แนบรูปภาพ">
+      <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+        <rect x="3" y="3" width="18" height="18" rx="2"/><circle cx="8.5" cy="8.5" r="1.5"/>
+        <polyline points="21 15 16 10 5 21"/>
+      </svg>
+    </button>
     <textarea id="input" class="input-box" placeholder="พิมพ์ข้อความ..." rows="1"></textarea>
     <button class="send-btn" id="sendBtn" onclick="send()">
       <svg width="17" height="17" viewBox="0 0 24 24" fill="none"
@@ -345,6 +372,70 @@
       </div>`;
     chat.appendChild(row);
     chat.scrollTop = chat.scrollHeight;
+  }
+
+  function addImgMsg(dataUrl, type) {
+    const chat = document.getElementById("chat");
+    const row  = document.createElement("div");
+    row.className = `msg-row ${type}`;
+    const av = type === "bot"
+      ? `<div class="avatar">CDS</div>`
+      : `<div class="avatar user-av">คุณ</div>`;
+    row.innerHTML = `${av}
+      <div>
+        <div class="bubble" style="padding:6px">
+          <img src="${dataUrl}">
+        </div>
+        <div class="ts">${now()}</div>
+      </div>`;
+    chat.appendChild(row);
+    chat.scrollTop = chat.scrollHeight;
+  }
+
+  function compressImage(file, maxWidth = 1024) {
+    return new Promise(resolve => {
+      const img = new Image();
+      const url = URL.createObjectURL(file);
+      img.onload = () => {
+        const scale  = Math.min(1, maxWidth / img.width);
+        const canvas = document.createElement("canvas");
+        canvas.width  = img.width  * scale;
+        canvas.height = img.height * scale;
+        canvas.getContext("2d").drawImage(img, 0, 0, canvas.width, canvas.height);
+        URL.revokeObjectURL(url);
+        resolve(canvas.toDataURL("image/jpeg", 0.8));
+      };
+      img.src = url;
+    });
+  }
+
+  async function handleFile(e) {
+    const file = e.target.files[0];
+    if (!file || !userId) return;
+    document.getElementById("fileInput").value = "";
+
+    const dataUrl  = await compressImage(file);
+    const base64   = dataUrl.split(",")[1];
+    const mimeType = "image/jpeg";
+
+    addImgMsg(dataUrl, "user");
+    showTyping();
+    document.getElementById("sendBtn").disabled = true;
+
+    try {
+      const res  = await fetch(API_URL, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ userId, imageBase64: base64, mimeType })
+      });
+      const data = await res.json();
+      hideTyping();
+      addMsg(data.reply || "ขออภัย ลองใหม่อีกครั้งค่ะ", "bot");
+    } catch {
+      hideTyping();
+      addMsg("ขออภัย เกิดข้อผิดพลาด กรุณาลองใหม่ค่ะ", "bot");
+    }
+    document.getElementById("sendBtn").disabled = false;
   }
 
   function showTyping() {
