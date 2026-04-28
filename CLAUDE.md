@@ -1,71 +1,77 @@
 # line-support-bot-lambda
 
-LINE OA Support Bot สำหรับทีม Application Support บริษัท CDSCOM
+LINE OA Support Bot + LIFF Web Chat สำหรับทีม Application Support บริษัท CDSCOM
 ช่วยตอบปัญหาการใช้งานระบบ Express (โปรแกรมพิธีการศุลกากร)
 
 ## Stack
 
-| | เดิม (Express) | Lambda | Lambda + RAG |
-|---|---|---|---|
-| Runtime | Node.js + Express | AWS Lambda | AWS Lambda |
-| Webhook | cloudflared tunnel | API Gateway | API Gateway |
-| Chat history | In-memory (หายเมื่อ restart) | DynamoDB (คงอยู่ 24 ชม.) | DynamoDB (คงอยู่ 24 ชม.) |
-| Knowledge base | hardcoded ใน prompt | hardcoded ใน prompt.mjs | Upstash Vector (เพิ่มได้ไม่ต้อง redeploy) |
-| ค่าใช้จ่าย | ต้องรันเครื่องตลอด | ฟรี (1M req/เดือน) | ฟรี (1M req/เดือน + Upstash free tier) |
+| | เดิม (Express) | Lambda | Lambda + RAG | Lambda + RAG + LIFF |
+|---|---|---|---|---|
+| Runtime | Node.js + Express | AWS Lambda | AWS Lambda | AWS Lambda |
+| Webhook | cloudflared tunnel | API Gateway | API Gateway | API Gateway |
+| Chat history | In-memory (หายเมื่อ restart) | DynamoDB (24 ชม.) | DynamoDB (24 ชม.) | DynamoDB (24 ชม.) |
+| Knowledge base | hardcoded ใน prompt | hardcoded ใน prompt.mjs | Upstash Vector | Upstash Vector |
+| Web Chat | ไม่มี | ไม่มี | ไม่มี | LIFF + GitHub Pages |
+| ค่าใช้จ่าย | ต้องรันเครื่องตลอด | ฟรี | ฟรี | ฟรีทั้งหมด |
 
 ## Architecture
 
-### ปัจจุบัน (Lambda + RAG via Upstash Vector)
+### ปัจจุบัน — 2 ช่องทาง
+
 ```
+ช่องทาง 1: LINE OA (DM)
+─────────────────────────────────────────────────────
 LINE OA
     ↓
-API Gateway → POST /webhook
+API Gateway → POST /webhook (ตรวจ x-line-signature)
     ↓
 Lambda (src/index.mjs)
-    ├── Upstash Vector → query Q&A ที่ใกล้เคียง (top 3, score ≥ 0.7)
-    │       └── inject Q&A เข้า system prompt
-    ├── Groq AI (llama-3.3-70b) → ตอบ text โดยมีข้อมูลครบ
-    ├── Groq Vision (llama-4-scout-17b) → อ่านรูป → text → query Upstash → ตอบ
+    ├── Upstash Vector → query Q&A (top 3, score ≥ 0.7)
+    ├── Groq AI (llama-3.3-70b) → ตอบ text
+    ├── Groq Vision (llama-4-scout-17b) → อ่านรูป → RAG → ตอบ
     └── DynamoDB → เก็บประวัติสนทนา 24 ชม.
+
+ช่องทาง 2: LIFF Web Chat (ลิงก์ใน LINE)
+─────────────────────────────────────────────────────
+User คลิกลิงก์ https://liff.line.me/2009887373-F9GIcCMR
+    ↓
+GitHub Pages (docs/index.html) — LIFF SDK → ดึง userId จาก LINE
+    ↓
+API Gateway → POST /chat (CORS enabled)
+    ↓
+Lambda (src/index.mjs) — handleWebChat()
+    ├── Text: RAG → Groq AI → reply
+    └── Image: compress (canvas) → Vision → RAG → Groq AI → reply
 ```
 
-### RAG Runtime Flow — Text Message
+### RAG Runtime Flow — Text Message (ทั้ง 2 ช่องทาง)
 ```
 User: "ยิงใบขนไม่ผ่านทำยังไง"
     ↓
-Lambda รับ webhook
-    ↓
-Query Upstash Vector (input: คำถาม user)
-    → แปลงเป็น vector อัตโนมัติ (multilingual-e5-large)
-    → ผลลัพธ์ top 3:
-        [0.95] ยิงใบขนไม่ผ่าน...
-        [0.87] ส่งซ้ำไม่ผ่าน...
-        [0.81] รอคำตอบกรมศุลฯ...
+Query Upstash Vector → top 3 matches (score ≥ 0.7)
+    [0.95] ยิงใบขนไม่ผ่าน...
+    [0.87] ส่งซ้ำไม่ผ่าน...
     ↓
 Build prompt:
-    [system prompt (prompt.mjs) — persona + rules + เบอร์ติดต่อ]
-    + ข้อมูลที่เกี่ยวข้องกับคำถามนี้:
-        Q: ยิงใบขนไม่ผ่าน
-        A: ให้ส่งซ้ำผ่านเมนู...
+    [system prompt] + [RAG context] + [history] + [user msg]
     ↓
-Groq AI ตอบโดยมีข้อมูลครบ
-    ↓
-Reply กลับ LINE user
+Groq AI → ตอบ → reply กลับ user
 ```
 
-### RAG Runtime Flow — Image Message
+### RAG Runtime Flow — Image Message (ทั้ง 2 ช่องทาง)
 ```
 User ส่งรูป error จากโปรแกรม
     ↓
-[1] Groq Vision (llama-4-scout-17b): อ่านรูป → แปลงเป็น text
+[LINE OA]  Lambda ดาวน์โหลดจาก LINE API → base64
+[Web Chat] Frontend compress ด้วย canvas → base64 → ส่ง API
+
+    ↓
+Groq Vision (llama-4-scout-17b): วิเคราะห์รูป → text
     → "พบ error DISCHARGE PORT MISMATCH ในโปรแกรม"
     ↓
-[2] Query Upstash Vector ด้วย text จาก Vision
-    → [0.91] qa-038: DISCHARGE PORT MISMATCH...
+Query Upstash Vector → RAG context
     ↓
-[3] Groq AI (llama-3.3-70b) + RAG context → ตอบ
-    ↓
-Reply กลับ LINE user
+Groq AI → ตอบ → reply กลับ user
 ```
 
 ## Project Structure
@@ -73,11 +79,13 @@ Reply กลับ LINE user
 ```
 line-support-bot-lambda/
 ├── CLAUDE.md
-├── ARCHITECTURE.md      # Architecture diagram + flow โดยละเอียด
-├── Makefile
+├── ARCHITECTURE.md
+├── Makefile             # ใช้ได้เฉพาะ WSL/Linux เท่านั้น (CRLF issue บน Windows)
 ├── package.json
+├── docs/
+│   └── index.html       # LIFF Web Chat UI (host บน GitHub Pages)
 ├── src/
-│   ├── index.mjs        # Lambda handler (หัวใจหลัก)
+│   ├── index.mjs        # Lambda handler — /webhook + /chat
 │   ├── prompt.mjs       # System prompt (persona + rules + เบอร์ติดต่อ)
 │   ├── knowledge.mjs    # Q&A data 83 คู่ สำหรับ upload ขึ้น Upstash Vector
 │   ├── upload-qa.mjs    # Script upload Q&A → Upstash (รันครั้งเดียว)
@@ -85,21 +93,41 @@ line-support-bot-lambda/
 ├── scripts/
 │   └── upload-qa.mjs    # สำเนาของ src/upload-qa.mjs
 └── terraform/
-    ├── main.tf          # Lambda + API Gateway + DynamoDB + IAM
+    ├── main.tf          # Lambda + API Gateway (CORS) + DynamoDB + IAM
     ├── variables.tf
     └── outputs.tf
 ```
 
 ## Environment Variables
 
-| ตัวแปร | ใช้ทำอะไร |
-|---|---|
-| `GROQ_API_KEY` | Groq AI API |
-| `LINE_CHANNEL_ACCESS_TOKEN` | ส่งข้อความกลับหา LINE user |
-| `LINE_CHANNEL_SECRET` | ตรวจ webhook signature (Basic settings ใน LINE Console) |
-| `DYNAMODB_TABLE` | ชื่อ table (set อัตโนมัติโดย Terraform) |
-| `UPSTASH_VECTOR_REST_URL` | Upstash Vector endpoint |
-| `UPSTASH_VECTOR_REST_TOKEN` | Upstash Vector token |
+| ตัวแปร | ใช้ทำอะไร | ดูได้จาก |
+|---|---|---|
+| `GROQ_API_KEY` | Groq AI API | console.groq.com |
+| `LINE_CHANNEL_ACCESS_TOKEN` | ส่งข้อความกลับหา LINE user | LINE Developers → Messaging API |
+| `LINE_CHANNEL_SECRET` | ตรวจ webhook signature (security) | LINE Developers → Basic settings |
+| `DYNAMODB_TABLE` | ชื่อ table (set อัตโนมัติโดย Terraform) | — |
+| `UPSTASH_VECTOR_REST_URL` | Upstash Vector endpoint | console.upstash.com |
+| `UPSTASH_VECTOR_REST_TOKEN` | Upstash Vector token | console.upstash.com |
+
+## LIFF Web Chat Setup (ทำครั้งเดียว)
+
+### 1. สร้าง LINE Login Channel
+- LINE Developers Console → Provider → **Create channel** → **LINE Login**
+- App type: **Web app**
+
+### 2. สร้าง LIFF App
+- LINE Login channel → แถบ **LIFF** → **Add**
+- Size: **Full**
+- Endpoint URL: `https://peacedwk55.github.io/line-support-bot-lambda/`
+- Scopes: **openid + profile**
+- Add friend option: **Off**
+- ได้ LIFF ID: `2009887373-F9GIcCMR`
+- LIFF URL: `https://liff.line.me/2009887373-F9GIcCMR`
+
+### 3. GitHub Pages
+- repo: `github.com/peacedwk55/line-support-bot-lambda` (Public)
+- Settings → Pages → Branch: `main` / Folder: `/docs`
+- URL: `https://peacedwk55.github.io/line-support-bot-lambda/`
 
 ## RAG Setup (Phase 1 — ทำครั้งเดียว)
 
@@ -121,9 +149,8 @@ UPSTASH_VECTOR_REST_TOKEN=<token> \
 node src/upload-qa.mjs
 ```
 
-## RAG Update (Phase 3 — เพิ่ม Q&A ทีหลัง)
+## RAG Update — เพิ่ม Q&A ใหม่ (ไม่ต้อง redeploy)
 
-ไม่ต้อง redeploy Lambda เลย:
 ```bash
 # 1. เพิ่ม Q&A ใหม่ใน src/knowledge.mjs
 # 2. Upload ใหม่
@@ -133,57 +160,74 @@ node src/upload-qa.mjs
 
 ## Commands
 
-### Deploy (ครั้งแรก)
+> **สำคัญ:** Makefile มีปัญหา CRLF บน Windows PowerShell — ให้รันใน **WSL เท่านั้น**
+
+### Deploy ครั้งแรก (WSL)
 ```bash
-# ใน WSL
 cd /mnt/d/Project/Demo-chatbot/line-support-bot-lambda
 
-make init
+# 1. Init Terraform (ครั้งแรกครั้งเดียว)
+cd terraform && terraform init && cd ..
 
-make deploy \
-  GROQ_API_KEY=<your_groq_key> \
-  LINE_CHANNEL_ACCESS_TOKEN=<your_line_token> \
-  LINE_CHANNEL_SECRET=<your_line_secret> \
-  UPSTASH_VECTOR_REST_URL=<your_upstash_url> \
-  UPSTASH_VECTOR_REST_TOKEN=<your_upstash_token>
+# 2. Build + Deploy
+npm install
+zip -r deploy.zip src/ node_modules/ package.json
+cd terraform && terraform apply -auto-approve \
+  -var="groq_api_key=<your_groq_key>" \
+  -var="line_channel_access_token=<your_line_token>" \
+  -var="line_channel_secret=<your_line_secret>" \
+  -var="upstash_vector_rest_url=<your_upstash_url>" \
+  -var="upstash_vector_rest_token=<your_upstash_token>"
 ```
 
-จะได้ Webhook URL ออกมา เช่น:
+จะได้ output:
 ```
-https://xxxxxxxxxx.execute-api.ap-southeast-1.amazonaws.com/webhook
+webhook_url  = "https://xxx.execute-api.ap-southeast-1.amazonaws.com/webhook"
+chat_api_url = "https://xxx.execute-api.ap-southeast-1.amazonaws.com/chat"
 ```
 
 ### ตั้งค่า Webhook ใน LINE Developers Console
-1. เข้า developers.line.biz
-2. เลือก Channel → Messaging API
-3. Webhook URL → ใส่ URL ที่ได้จาก terraform output
-4. กด Verify → ควรขึ้น Success
+1. เข้า developers.line.biz → Messaging API channel
+2. Webhook URL → ใส่ค่า `webhook_url` จาก terraform output
+3. กด **Verify** → ควรขึ้น **Success**
 
-### Update code (deploy ซ้ำ)
+### Update Lambda code (WSL)
 ```bash
-make deploy \
-  GROQ_API_KEY=<your_groq_key> \
-  LINE_CHANNEL_ACCESS_TOKEN=<your_line_token> \
-  LINE_CHANNEL_SECRET=<your_line_secret> \
-  UPSTASH_VECTOR_REST_URL=<your_upstash_url> \
-  UPSTASH_VECTOR_REST_TOKEN=<your_upstash_token>
+cd /mnt/d/Project/Demo-chatbot/line-support-bot-lambda
+npm install
+zip -r deploy.zip src/ node_modules/ package.json
+cd terraform && terraform apply -auto-approve \
+  -var="groq_api_key=<key>" \
+  -var="line_channel_access_token=<token>" \
+  -var="line_channel_secret=<secret>" \
+  -var="upstash_vector_rest_url=<url>" \
+  -var="upstash_vector_rest_token=<token>"
 ```
 
-Webhook URL ไม่เปลี่ยน
-
-### ดู Webhook URL ที่ deploy ไปแล้ว
+### Update frontend เท่านั้น (ไม่ต้อง rebuild Lambda)
 ```bash
-cd terraform && terraform output webhook_url
+# แก้ไข docs/index.html แล้ว push
+git add docs/index.html
+git commit -m "Update web chat UI"
+git push
+# GitHub Pages อัปเดตอัตโนมัติภายใน 1-2 นาที
 ```
 
-### Destroy (ลบทุกอย่าง)
+### ดู URLs ที่ deploy ไปแล้ว
 ```bash
-make destroy \
-  GROQ_API_KEY=<your_groq_key> \
-  LINE_CHANNEL_ACCESS_TOKEN=<your_line_token>
+cd terraform && terraform output
 ```
 
-จะลบ Lambda + API Gateway + DynamoDB ทั้งหมด
+### Destroy (ลบทุกอย่างบน AWS)
+```bash
+cd /mnt/d/Project/Demo-chatbot/line-support-bot-lambda/terraform
+terraform destroy -auto-approve \
+  -var="groq_api_key=<key>" \
+  -var="line_channel_access_token=<token>" \
+  -var="line_channel_secret=<secret>" \
+  -var="upstash_vector_rest_url=<url>" \
+  -var="upstash_vector_rest_token=<token>"
+```
 
 ## AWS Resources ที่สร้าง
 
@@ -194,6 +238,7 @@ make destroy \
 | DynamoDB | line-support-bot-history | 25GB |
 | IAM Role | line-support-bot-role | ฟรี |
 | Upstash Vector | (สร้างเอง) | 10K queries/วัน |
+| GitHub Pages | peacedwk55.github.io | ฟรีตลอด |
 
 ## AI Models
 
@@ -211,7 +256,11 @@ make destroy \
 - Knowledge base (rag-qa.md) มี 97 Q&A จาก LINE group chat จริง Feb–Apr 2026
 - knowledge.mjs (อัปโหลดจริง) มี 83 คู่
 - เพิ่ม Q&A ใหม่ได้ตลอดโดยไม่ต้อง redeploy Lambda
-- รูปภาพก็ผ่าน RAG เหมือนกัน: Vision แปลงรูป → text → Upstash → Groq
+- รูปภาพผ่าน RAG ทั้ง LINE OA และ Web Chat: Vision → text → Upstash → Groq
+- Image ในกลุ่ม LINE: bot ไม่ตอบ (ตรวจ mention ไม่ได้สำหรับรูป)
+- History เก็บรายคน (userId) ไม่แชร์ข้ามกลุ่ม
+- Web Chat compress รูปด้วย canvas ก่อนส่ง (max 1024px, quality 0.8)
+- Makefile ใช้ได้เฉพาะ WSL — อย่ารันบน Windows PowerShell
 
 ## AWS Console Links
 
@@ -224,11 +273,11 @@ https://ap-southeast-1.console.aws.amazon.com/apigateway/main/apis?region=ap-sou
 ## AWS CLI
 
 ```bash
+# ดู logs ล่าสุด (ใช้บ่อยสุด)
+aws logs tail /aws/lambda/line-support-bot --follow
+
 # ดู Lambda function
 aws lambda get-function --function-name line-support-bot --output table
-
-# ดู logs ล่าสุด (ต้องใช้บ่อยสุด)
-aws logs tail /aws/lambda/line-support-bot --follow
 
 # ดู DynamoDB — chat history ที่เก็บอยู่
 aws dynamodb scan --table-name line-support-bot-history --output table
@@ -236,3 +285,8 @@ aws dynamodb scan --table-name line-support-bot-history --output table
 # ดู API Gateway
 aws apigatewayv2 get-apis --output table
 ```
+แก้อะไร	ทำอะไร
+แก้ Lambda code (src/)	rebuild ใน WSL → npm install + zip + terraform apply
+แก้ Web Chat UI (docs/)	git push อย่างเดียว
+เพิ่ม Q&A	node src/upload-qa.mjs อย่างเดียว
+ไม่กระทบ LIFF หรือ LINE channel เลยครับ

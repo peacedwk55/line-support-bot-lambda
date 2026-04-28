@@ -1,37 +1,36 @@
-# Architecture — LINE Support Bot + RAG
+# Architecture — LINE Support Bot + RAG + LIFF Web Chat
 
 ## ภาพรวมระบบทั้งหมด
 
 ```
 ┌─────────────────────────────────────────────────────────────────────────────┐
-│                         LINE Support Bot (RAG Edition)                      │
+│              LINE Support Bot (RAG + LIFF Web Chat Edition)                 │
 │                    ทีม Application Support — CDS Express                    │
 └─────────────────────────────────────────────────────────────────────────────┘
 
-  ┌──────────┐   ส่งข้อความ   ┌─────────────────┐   POST /webhook
-  │  User    │ ─────────────▶ │   LINE OA        │ ────────────────▶ API Gateway
-  │ (LINE)   │               │  (Messaging API)  │
-  └──────────┘               └─────────────────┘
-       ▲                                                        │
-       │                                                        ▼
-       │  reply                                        ┌─────────────────┐
-       └───────────────────────────────────────────────│  AWS Lambda     │
-                                                       │  (index.mjs)   │
-                                                       └────────┬────────┘
-                                                                │
-                            ┌───────────────────────────────────┤
-                            │                                   │
-                            ▼                                   ▼
-                   ┌─────────────────┐               ┌─────────────────┐
-                   │  Upstash Vector │               │    DynamoDB     │
-                   │  (RAG search)   │               │  (chat history) │
-                   └────────┬────────┘               └─────────────────┘
-                            │
-                            ▼
-                   ┌─────────────────┐
-                   │    Groq AI      │
-                   │ (llama-3.3-70b) │
-                   └─────────────────┘
+ช่องทาง 1: LINE OA
+  ┌──────────┐  ส่งข้อความ  ┌──────────────────┐  POST /webhook
+  │  User    │ ────────────▶│    LINE OA        │ ─────────────▶ API Gateway
+  │ (LINE)   │              │  (Messaging API)  │   (verify sig)
+  └──────────┘              └──────────────────┘
+       ▲                                                  │
+       │ reply                                            ▼
+       └──────────────────────────────────────── AWS Lambda (index.mjs)
+                                                          │
+ช่องทาง 2: LIFF Web Chat                                  │
+  ┌──────────┐  คลิกลิงก์  ┌──────────────────┐          │
+  │  User    │ ────────────▶│  GitHub Pages    │          │
+  │ (LINE)   │              │  (docs/index.html│          │
+  └──────────┘              │   LIFF SDK)      │          │
+       ▲                    └────────┬─────────┘          │
+       │ reply                       │ POST /chat          │
+       │                             ▼                    │
+       │                      API Gateway ────────────────┘
+       │                       (CORS enabled)
+       │
+       └──────────────────────────────────── Lambda ──┬── Upstash Vector
+                                                       ├── Groq AI
+                                                       └── DynamoDB
 ```
 
 ---
@@ -41,8 +40,16 @@
 ```
 line-support-bot-lambda/
 │
+├── docs/
+│   └── index.html         ← LIFF Web Chat UI (GitHub Pages)
+│                             - สีแดง CDSCOM branding
+│                             - ปุ่มแนบรูป + compress ด้วย canvas
+│                             - LIFF SDK → ดึง userId จาก LINE
+│
 ├── src/
-│   ├── index.mjs          ← Lambda handler (หัวใจหลัก)
+│   ├── index.mjs          ← Lambda handler
+│   │                         - POST /webhook → LINE OA (verify signature)
+│   │                         - POST /chat    → LIFF Web Chat (CORS)
 │   ├── prompt.mjs         ← System prompt (persona + rules + เบอร์ติดต่อ)
 │   ├── knowledge.mjs      ← Q&A data 83 คู่ (สำหรับ upload Upstash)
 │   ├── upload-qa.mjs      ← Script upload ขึ้น Upstash (รันครั้งเดียว)
@@ -52,11 +59,13 @@ line-support-bot-lambda/
 │   └── upload-qa.mjs      ← สำเนาของ src/upload-qa.mjs
 │
 ├── terraform/
-│   ├── main.tf            ← สร้าง Lambda + API Gateway + DynamoDB + IAM
+│   ├── main.tf            ← Lambda + API Gateway (CORS, payload v2.0)
+│   │                         + DynamoDB + IAM
+│   │                         routes: POST /webhook, POST /chat
 │   ├── variables.tf       ← รับ env vars (Groq, LINE, Upstash keys)
-│   └── outputs.tf         ← แสดง Webhook URL หลัง deploy
+│   └── outputs.tf         ← webhook_url, chat_api_url
 │
-├── Makefile               ← คำสั่ง deploy/destroy ง่ายๆ
+├── Makefile               ← ใช้ได้เฉพาะ WSL (CRLF issue บน Windows)
 ├── package.json           ← dependencies (@upstash/vector, axios, aws-sdk)
 ├── ARCHITECTURE.md        ← เอกสาร architecture นี้
 └── CLAUDE.md              ← เอกสารโปรเจค (อ่านนี้ก่อน)
@@ -64,52 +73,41 @@ line-support-bot-lambda/
 
 ---
 
-## Flow การทำงาน — เมื่อ User ส่งข้อความ
+## Flow: LINE OA — Text Message
 
 ```
 User พิมพ์: "ยิงใบขนไม่ผ่านทำยังไง"
 │
 ▼
-[1] LINE webhook → API Gateway → Lambda (index.mjs)
+[1] LINE webhook → API Gateway → Lambda
+     ├── ตรวจ x-line-signature (HMAC-SHA256 + LINE_CHANNEL_SECRET)
      ├── ตรวจสอบ event type (text / image)
-     ├── ถ้าอยู่ในกลุ่ม ต้อง mention @bot ก่อน
-     └── ดึง userId / groupId
+     ├── ถ้าอยู่ในกลุ่ม: text ต้อง mention @bot / บอท ก่อน
+     │   (image ในกลุ่ม: ไม่ตอบ เพราะตรวจ mention ไม่ได้)
+     └── userId = ev.source.userId (รายคน ไม่แชร์กลุ่ม)
 
 [2] DynamoDB: getHistory(userId)
-     └── โหลดประวัติสนทนา 10 รายการล่าสุด (คงอยู่ 24 ชม.)
+     └── โหลดประวัติสนทนา 10 รายการล่าสุด (TTL 24 ชม.)
 
 [3] Upstash Vector: searchKnowledge(userMsg)
      ├── แปลงข้อความ → vector (multilingual-e5-large)
-     ├── ค้นหา Q&A ที่ใกล้เคียง top 3
-     ├── กรองเฉพาะ score ≥ 0.7
-     └── ผลลัพธ์ตัวอย่าง:
-           [0.95] Q: ยิงใบขนไม่ผ่าน...  A: ให้ส่งซ้ำผ่านเมนู...
-           [0.87] Q: ส่งซ้ำไม่ผ่าน...   A: ต้องทำสำเนา...
+     ├── ค้นหา top 3 (score ≥ 0.7)
+     └── [0.95] Q: ยิงใบขนไม่ผ่าน...  A: ให้ส่งซ้ำผ่านเมนู...
 
 [4] Build prompt:
-     ┌────────────────────────────────────────────────┐
-     │ [SYSTEM] prompt.mjs (persona + rules)          │
-     │                                                │
-     │ ข้อมูลที่เกี่ยวข้องกับคำถามนี้:               │
-     │ Q: ยิงใบขนไม่ผ่าน...                          │
-     │ A: ให้ส่งซ้ำผ่านเมนู...                       │
-     │                                                │
-     │ [HISTORY] บทสนทนาก่อนหน้า...                  │
-     │ [USER] ยิงใบขนไม่ผ่านทำยังไง                  │
-     └────────────────────────────────────────────────┘
+     [system prompt] + [RAG context] + [history] + [user msg]
 
-[5] Groq AI (llama-3.3-70b): ตอบโดยมีข้อมูลครบ
-     └── fallback: llama-3.1-8b → gemma2-9b ถ้า model หลักล้มเหลว
+[5] Groq AI (llama-3.3-70b) → ตอบ
+     └── fallback: llama-3.1-8b → gemma2-9b
 
-[6] DynamoDB: saveHistory(userId, history)
-     └── เก็บบทสนทนา + ตั้ง TTL 24 ชม.
+[6] DynamoDB: saveHistory(userId, history) + TTL 24 ชม.
 
 [7] LINE reply → ส่งคำตอบกลับ user
 ```
 
 ---
 
-## Flow การทำงาน — เมื่อ User ส่งรูปภาพ
+## Flow: LINE OA — Image Message
 
 ```
 User ส่งรูป error จากโปรแกรม
@@ -117,84 +115,128 @@ User ส่งรูป error จากโปรแกรม
 ▼
 [1] Lambda ดาวน์โหลดรูปจาก LINE API → base64
 
-[2] Groq Vision (llama-4-scout-17b): วิเคราะห์รูป → แปลงเป็น text
+[2] Groq Vision (llama-4-scout-17b): วิเคราะห์รูป → text
      → "พบ error DISCHARGE PORT MISMATCH ในโปรแกรม"
 
-[3] Upstash Vector: searchKnowledge(visionText)
-     ├── ใช้ text จาก Vision เป็น query
-     ├── ค้นหา Q&A ที่ตรงกัน top 3 (score ≥ 0.7)
-     └── [0.91] qa-038: DISCHARGE PORT MISMATCH...
+[3] Upstash Vector: searchKnowledge(visionText) → RAG context
 
-[4] Build prompt + RAG context (เหมือน text flow)
+[4] Groq AI + RAG → ตอบ
 
-[5] Groq AI (llama-3.3-70b) + RAG context → ตอบ
+[5] DynamoDB: saveHistory
 
 [6] LINE reply → ส่งคำตอบกลับ user
 ```
 
 ---
 
-## Flow การ Setup Knowledge Base (ทำครั้งเดียว)
+## Flow: LIFF Web Chat — Text Message
 
 ```
-ขั้นตอน Setup RAG:
+User เปิด https://liff.line.me/2009887373-F9GIcCMR ใน LINE
+│
+▼
+[1] LIFF SDK: init → login → getProfile() → userId
 
+[2] User พิมพ์ข้อความ → fetch POST /chat
+     { userId, message }
+
+[3] API Gateway (CORS: Allow-Origin *) → Lambda handleWebChat()
+
+[4] Lambda: RAG → Groq AI → reply (เหมือน LINE OA flow)
+
+[5] DynamoDB: saveHistory(userId, history)
+
+[6] Response: { reply } → แสดงใน chat bubble
+```
+
+---
+
+## Flow: LIFF Web Chat — Image Message
+
+```
+User กดปุ่มรูป → เลือกไฟล์
+│
+▼
+[1] Frontend: canvas compress (max 1024px, quality 0.8) → base64
+
+[2] fetch POST /chat
+     { userId, imageBase64, mimeType: "image/jpeg" }
+
+[3] Lambda handleWebChat()
+     → describeImage(base64) → Groq Vision → text description
+     → searchKnowledge(text) → RAG context
+     → askAI() → reply
+
+[4] Response: { reply } → แสดงใน chat bubble
+```
+
+---
+
+## Flow: Setup Knowledge Base (ทำครั้งเดียว)
+
+```
 [1] สมัคร Upstash Vector (ฟรี)
-     └── console.upstash.com → สร้าง Index
-         embedding: multilingual-e5-large (รองรับภาษาไทย)
+     console.upstash.com → สร้าง Index
+     embedding: multilingual-e5-large
 
-[2] เตรียม Q&A data
-     src/knowledge.mjs ← แก้ไขไฟล์นี้
-     format: [ { id, q, a }, ... ]
-
-     ที่มาของ Q&A:
-     src/rag-qa.md (97 คู่ จาก LINE group chat Feb–Apr 2026)
-         ↓ คัดกรองและแปลง
+[2] เตรียม Q&A
+     src/rag-qa.md (97 คู่ ต้นฉบับ)
+         ↓
      src/knowledge.mjs (83 คู่ สำหรับ upload)
 
-[3] รัน upload script
-     export UPSTASH_VECTOR_REST_URL=https://...
-     export UPSTASH_VECTOR_REST_TOKEN=...
+[3] Upload
      node src/upload-qa.mjs
 
-     → แปลง Q&A แต่ละข้อ → vector → upsert ขึ้น Upstash
-     → ทดสอบ query อัตโนมัติหลัง upload
-
-[4] Deploy Lambda (พร้อม Upstash credentials)
-     make deploy \
-       GROQ_API_KEY=... \
-       LINE_CHANNEL_ACCESS_TOKEN=... \
-       UPSTASH_VECTOR_REST_URL=... \
-       UPSTASH_VECTOR_REST_TOKEN=...
+[4] Deploy Lambda (WSL)
+     npm install
+     zip -r deploy.zip src/ node_modules/ package.json
+     cd terraform && terraform apply -auto-approve -var=...
 ```
 
 ---
 
-## Flow การอัปเดต Q&A (ไม่ต้อง redeploy Lambda)
+## Flow: อัปเดต Q&A (ไม่ต้อง redeploy)
 
 ```
-พบปัญหาใหม่ที่ user ถามบ่อย
-│
-▼
-แก้ไข src/knowledge.mjs
-เพิ่ม { id: "qa-084", q: "คำถาม", a: "คำตอบ" }
-│
-▼
+เพิ่ม Q&A ใหม่ใน src/knowledge.mjs
+    ↓
 node src/upload-qa.mjs
-│
-▼
-ระบบฉลาดขึ้นทันที (ไม่ต้อง deploy Lambda ใหม่)
+    ↓
+ระบบฉลาดขึ้นทันที
 ```
 
 ---
 
-## Environment Variables ที่ต้องใช้
+## Build & Deploy (WSL เท่านั้น)
+
+```bash
+# Build
+cd /mnt/d/Project/Demo-chatbot/line-support-bot-lambda
+npm install
+zip -r deploy.zip src/ node_modules/ package.json
+
+# Deploy Lambda + Infrastructure
+cd terraform && terraform apply -auto-approve \
+  -var="groq_api_key=..." \
+  -var="line_channel_access_token=..." \
+  -var="line_channel_secret=..." \
+  -var="upstash_vector_rest_url=..." \
+  -var="upstash_vector_rest_token=..."
+
+# Update frontend only (ไม่ต้อง rebuild)
+git add docs/index.html && git commit -m "..." && git push
+```
+
+---
+
+## Environment Variables
 
 | ตัวแปร | ที่มา | ใช้ใน |
 |---|---|---|
-| `GROQ_API_KEY` | console.groq.com | Lambda → เรียก Groq AI |
-| `LINE_CHANNEL_ACCESS_TOKEN` | developers.line.biz | Lambda → ส่งข้อความกลับ LINE |
-| `DYNAMODB_TABLE` | Terraform auto-set | Lambda → เก็บ chat history |
+| `GROQ_API_KEY` | console.groq.com | Lambda → Groq AI + Vision |
+| `LINE_CHANNEL_ACCESS_TOKEN` | LINE Developers → Messaging API | Lambda → reply + download image |
+| `LINE_CHANNEL_SECRET` | LINE Developers → Basic settings | Lambda → verify webhook signature |
+| `DYNAMODB_TABLE` | Terraform auto-set | Lambda → chat history |
 | `UPSTASH_VECTOR_REST_URL` | console.upstash.com | Lambda + upload-qa.mjs |
 | `UPSTASH_VECTOR_REST_TOKEN` | console.upstash.com | Lambda + upload-qa.mjs |
 
@@ -209,6 +251,7 @@ node src/upload-qa.mjs
 | DynamoDB | line-support-bot-history | 25GB |
 | IAM Role | line-support-bot-role | ฟรี |
 | Upstash Vector | (สร้างเอง) | 10K queries/วัน |
+| GitHub Pages | peacedwk55.github.io | ฟรีตลอด |
 
 ---
 
@@ -219,3 +262,14 @@ node src/upload-qa.mjs
 | ตอบข้อความ (text) | llama-3.3-70b-versatile | llama-3.1-8b → gemma2-9b |
 | วิเคราะห์รูปภาพ (vision) | llama-4-scout-17b | — |
 | Embedding (RAG) | multilingual-e5-large | — (Upstash built-in) |
+
+---
+
+## Security
+
+| จุด | วิธีป้องกัน |
+|---|---|
+| LINE webhook | ตรวจ HMAC-SHA256 signature ทุก request |
+| Web Chat (/chat) | CORS restrict + userId จาก LIFF (LINE authenticated) |
+| API Keys | เก็บใน Lambda env vars ผ่าน Terraform (ไม่ hardcode) |
+| Chat history | DynamoDB TTL 24 ชม. (ลบอัตโนมัติ) |
