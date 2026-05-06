@@ -24,13 +24,14 @@ variable "line_channel_secret" {
   sensitive   = true
 }
 
-variable "upstash_vector_rest_url" {
-  description = "Upstash Vector REST URL"
+variable "mongodb_uri" {
+  description = "MongoDB Atlas Connection String"
   type        = string
+  sensitive   = true
 }
 
-variable "upstash_vector_rest_token" {
-  description = "Upstash Vector REST Token"
+variable "google_ai_api_key" {
+  description = "Google AI API Key (สำหรับ Embedding)"
   type        = string
   sensitive   = true
 }

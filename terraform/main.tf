@@ -83,8 +83,8 @@ resource "aws_lambda_function" "bot" {
       LINE_CHANNEL_ACCESS_TOKEN     = var.line_channel_access_token
       LINE_CHANNEL_SECRET           = var.line_channel_secret
       DYNAMODB_TABLE                = aws_dynamodb_table.chat_history.name
-      UPSTASH_VECTOR_REST_URL       = var.upstash_vector_rest_url
-      UPSTASH_VECTOR_REST_TOKEN     = var.upstash_vector_rest_token
+      MONGODB_URI                   = var.mongodb_uri
+      GOOGLE_AI_API_KEY             = var.google_ai_api_key
     }
   }
 }
