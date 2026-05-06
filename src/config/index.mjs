@@ -18,3 +18,10 @@ export const CORS = {
     "Access-Control-Allow-Headers": "Content-Type",
     "Access-Control-Allow-Methods": "POST, OPTIONS",
 };
+
+// MongoDB Atlas + Google Embedding
+export const MONGODB_URI = process.env.MONGODB_URI;
+export const MONGODB_DB = "line-support-bot";
+export const MONGODB_COLLECTION = "knowledge";
+export const GOOGLE_AI_API_KEY = process.env.GOOGLE_AI_API_KEY;
+export const GOOGLE_EMBEDDING_MODEL = "embedding-001";
