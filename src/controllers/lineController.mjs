@@ -1,3 +1,4 @@
+import { LIFF_URL, LIFF_KEYWORDS } from "../config/index.mjs";
 import { SYSTEM_PROMPT } from "../prompt.mjs";
 import { askAI, describeImage, downloadLineImage, replyToLine } from "../services/groqService.mjs";
 import { searchKnowledge, buildKnowledgeContext } from "../services/ragService.mjs";
@@ -24,6 +25,16 @@ export async function handleLineEvent(ev) {
     }
 
     let reply;
+
+    // ดักคำที่บ่งบอกว่าต้องการ LIFF URL
+    if (msgType === "text") {
+        const lowerMsg = ev.message.text.toLowerCase();
+        const wantsLiff = LIFF_KEYWORDS.some(kw => lowerMsg.includes(kw));
+        if (wantsLiff) {
+            await replyToLine(ev.replyToken, `สามารถใช้งาน Web Chat ได้ที่ลิงก์นี้เลยค่ะ 😊\n${LIFF_URL}`);
+            return;
+        }
+    }
 
     if (msgType === "image") {
         const history = await getHistory(userId);

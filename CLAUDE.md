@@ -4,21 +4,17 @@ AWS Lambda + RAG chatbot สำหรับทีม Application Support ตอ�
 
 ## Stack
 
-| ส่วน | เทคโนโลยี |
-|---|---|
-| Runtime | AWS Lambda (Node.js 20.x) |
-| API | API Gateway v2 HTTP API |
-| AI (text) | Groq — llama-3.3-70b → llama-3.1-8b → gemma2-9b (fallback) |
-| AI (vision) | Groq — llama-4-scout-17b |
-| Knowledge base | Upstash Vector (multilingual-e5-large embedding) |
-| Chat history | DynamoDB (TTL 24 ชม., เก็บ 10 messages ต่อ user) |
-| Web Chat UI | GitHub Pages (`docs/index.html`) + LIFF SDK |
-
----
+| ส่วน           | เทคโนโลยี |
+| Runtime       | AWS Lambda (Node.js 20.x) |
+| API           | API Gateway v2 HTTP API |
+| AI (text)     | Groq — llama-3.3-70b → llama-3.1-8b → gemma2-9b 
+| AI (vision)   | Groq — llama-4-scout-17b |
+| Knowledge base| Upstash Vector (multilingual-e5-large embedding) |
+| Chat history  | DynamoDB (TTL 24 ชม., เก็บ 10 messages ต่อ user) |
+| Web Chat UI   | GitHub Pages (`docs/index.html`) + LIFF SDK |
 
 ## Project Structure
 
-```
 src/
 ├── index.mjs                  # Lambda entry — routing /webhook และ /chat
 ├── prompt.mjs                 # System prompt (persona, rules, เบอร์ติดต่อ)
@@ -39,14 +35,9 @@ docs/index.html                # Web Chat UI (GitHub Pages)
 scripts/upload-qa.mjs          # Upload Q&A → Upstash
 terraform/                     # Infrastructure as Code (Lambda + API GW + DynamoDB)
 ```
-
----
-
-## Flow การทำงาน
-
+## Flow การทำงาน 
 ### ช่องทาง 1 — LINE OA (`POST /webhook`)
 
-```
 User ส่งข้อความ/รูป
   → LINE → API Gateway → Lambda
   → verifySignature (HMAC-SHA256)
@@ -67,7 +58,6 @@ User เปิด https://liff.line.me/2009887373-F9GIcCMR
       ├── [text]  RAG → Groq AI → { reply }
       └── [image] compress canvas (1024px) → Vision → RAG → Groq AI → { reply }
 ```
-
 ### RAG Pipeline (ทั้ง 2 ช่องทาง)
 
 ```
@@ -76,20 +66,16 @@ user message / vision text
   → buildKnowledgeContext → ต่อท้าย system prompt
   → [system + RAG context + history + user msg] → Groq AI → reply
   → saveHistory (DynamoDB)
-```
-
 ---
-
 ## Environment Variables
 
-| ตัวแปร | ที่มา |
-|---|---|
-| `GROQ_API_KEY` | console.groq.com |
-| `LINE_CHANNEL_ACCESS_TOKEN` | LINE Developers → Messaging API |
-| `LINE_CHANNEL_SECRET` | LINE Developers → Basic settings |
-| `DYNAMODB_TABLE` | Terraform (set อัตโนมัติ) |
-| `UPSTASH_VECTOR_REST_URL` | console.upstash.com |
-| `UPSTASH_VECTOR_REST_TOKEN` | console.upstash.com |
+| ตัวแปร                         | ที่มา |
+| `GROQ_API_KEY`                | console.groq.com |
+| `LINE_CHANNEL_ACCESS_TOKEN`   | LINE Developers → Messaging API |
+| `LINE_CHANNEL_SECRET`         | LINE Developers → Basic settings |
+| `DYNAMODB_TABLE`              | Terraform (set อัตโนมัติ) |
+| `UPSTASH_VECTOR_REST_URL`     | console.upstash.com |
+| `UPSTASH_VECTOR_REST_TOKEN`   | console.upstash.com |
 
 ---
 
@@ -131,13 +117,9 @@ aws logs tail /aws/lambda/line-support-bot --follow
 ```bash
 cd terraform && terraform output
 ```
-
----
-
 ## แก้อะไร → ทำอะไร
 
-| แก้ | คำสั่ง |
-|---|---|
-| Lambda code / prompt (`src/`) | deploy (WSL) |
-| Web Chat UI (`docs/index.html`) | `git push` |
-| Q&A knowledge (`src/knowledge.mjs`) | `node scripts/upload-qa.mjs` |
+| แก้                                    | คำสั่ง |
+| Lambda code / prompt (`src/`)         | deploy (WSL) |
+| Web Chat UI (`docs/index.html`)       | `git push` |
+| Q&A knowledge (`src/knowledge.mjs`)   | `node scripts/upload-qa.mjs` |

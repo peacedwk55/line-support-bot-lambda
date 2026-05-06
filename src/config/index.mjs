@@ -9,6 +9,10 @@ export const MODELS = [
 
 export const VISION_MODEL = "meta-llama/llama-4-scout-17b-16e-instruct";
 
+export const LIFF_URL = "https://liff.line.me/2009887373-F9GIcCMR";
+
+export const LIFF_KEYWORDS = ["เว็บ", "web", "chat", "แชท", "ลิ้งค์", "ลิงก์", "link", "url", "liff", "หน้าเว็บ", "เปิดเว็บ", "webchat"];
+
 export const CORS = {
     "Access-Control-Allow-Origin": "*",
     "Access-Control-Allow-Headers": "Content-Type",
