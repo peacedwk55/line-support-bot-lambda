@@ -1,8 +1,0 @@
-app_name: demo-iac
-app_port: 8080
-
-db_name: demodb
-db_user: demouser
-db_password: demopass
-
-html_dir: /usr/share/nginx/html
