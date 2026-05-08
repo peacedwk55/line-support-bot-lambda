@@ -66,11 +66,16 @@ export async function handleLineEvent(ev) {
         const knowledgeContext = buildKnowledgeContext(matches);
         if (matches.length > 0) {
             console.log(`RAG: พบ ${matches.length} matches (scores: ${matches.map(m => m.score.toFixed(2)).join(", ")})`);
+        } else {
+            console.log("RAG: ไม่พบข้อมูลที่เกี่ยวข้อง");
         }
 
         const systemWithKnowledge = SYSTEM_PROMPT + knowledgeContext;
+        const userMsgWithHint = matches.length === 0
+            ? `${userMsg}\n\n[ไม่พบข้อมูลในระบบที่เกี่ยวข้องกับคำถามนี้ กรุณาแจ้งว่าไม่มีข้อมูลในระบบและแนะนำติดต่อ Support]`
+            : userMsg;
         history.push({ role: "user", content: userMsg });
-        const messages = [{ role: "system", content: systemWithKnowledge }, ...history];
+        const messages = [{ role: "system", content: systemWithKnowledge }, ...history.slice(0, -1), { role: "user", content: userMsgWithHint }];
         reply = await askAI(messages) || "ขออภัย ลองใหม่อีกครั้งค่ะ";
         history.push({ role: "assistant", content: reply });
         await saveHistory(userId, history);

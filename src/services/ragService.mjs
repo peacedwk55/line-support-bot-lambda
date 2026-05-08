@@ -26,31 +26,93 @@ async function getEmbedding(text) {
     return data.embedding.values;
 }
 
+function normalizeQuery(text) {
+    return text
+        .replace(/@\S+/g, "")          // ลบ @mention
+        .replace(/\s+/g, " ")           // ลด whitespace
+        .trim()
+        .substring(0, 500);             // จำกัดความยาว
+}
+
+// Extract error codes and technical keywords from query for keyword matching
+// e.g. "NUMERIC OR VALUE ERROR", "VSED-0061", "PYWZ000000333"
+function extractKeywords(text) {
+    const patterns = [
+        /[A-Z][A-Z0-9_-]{2,}/g,        // ERROR CODES: NUMERIC, VSED-0061, CMAN
+        /[A-Z]{2,}\d{4,}/g,             // Doc numbers: PYWZ000000333
+    ];
+    const keywords = new Set();
+    for (const p of patterns) {
+        const matches = text.match(p) || [];
+        for (const m of matches) {
+            // Skip common English words that aren't error codes
+            if (!["THE", "AND", "FOR", "WITH", "FROM", "THAT", "THIS", "ARE", "NOT", "CDS"].includes(m)) {
+                keywords.add(m);
+            }
+        }
+    }
+    return [...keywords];
+}
+
+// Keyword-based search for exact error codes/terms (no embedding needed)
+async function keywordSearch(collection, query) {
+    const keywords = extractKeywords(query);
+    if (keywords.length === 0) return [];
+
+    const regexParts = keywords.map(k => k.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"));
+    const pattern = regexParts.join("|");
+    const regex = new RegExp(pattern, "i");
+
+    const results = await collection.find(
+        { $or: [{ q: regex }, { a: regex }] },
+        { projection: { q: 1, a: 1, _id: 1 } }
+    ).limit(3).toArray();
+
+    return results.map(r => ({ _id: r._id, q: r.q, a: r.a, score: 0.85, source: "keyword" }));
+}
+
 export async function searchKnowledge(query) {
     if (!MONGODB_URI || !GOOGLE_AI_API_KEY) return [];
     try {
-        const queryVector = await getEmbedding(query);
+        const normalized = normalizeQuery(query);
         const collection = await getCollection();
-        const results = await collection.aggregate([
-            {
-                $vectorSearch: {
-                    index: "vector_index",
-                    path: "embedding",
-                    queryVector,
-                    numCandidates: 50,
-                    limit: 3,
+
+        // Run vector search and keyword search in parallel
+        const [vectorResults, kwResults] = await Promise.all([
+            collection.aggregate([
+                {
+                    $vectorSearch: {
+                        index: "vector_index",
+                        path: "embedding",
+                        queryVector: await getEmbedding(normalized),
+                        numCandidates: 150,
+                        limit: 5,
+                    },
                 },
-            },
-            {
-                $project: {
-                    q: 1,
-                    a: 1,
-                    score: { $meta: "vectorSearchScore" },
-                },
-            },
-        ]).toArray();
-        return results
-            .filter(r => r.score >= 0.7)
+                { $project: { q: 1, a: 1, score: { $meta: "vectorSearchScore" } } },
+            ]).toArray().then(r =>
+                r.filter(r => r.score >= 0.65).map(r => ({ ...r, source: "vector" }))
+            ),
+            keywordSearch(collection, normalized),
+        ]);
+
+        // Merge: keyword hits first (exact match), then vector hits (deduplicated by _id)
+        const seen = new Set();
+        const merged = [];
+        for (const r of [...kwResults, ...vectorResults]) {
+            const id = String(r._id);
+            if (!seen.has(id)) {
+                seen.add(id);
+                merged.push(r);
+            }
+        }
+
+        if (kwResults.length > 0) {
+            console.log(`RAG keyword: พบ ${kwResults.length} keyword matches`);
+        }
+
+        return merged
+            .slice(0, 5)
             .map(r => ({ metadata: { q: r.q, a: r.a }, score: r.score }));
     } catch (err) {
         console.log("MongoDB search failed:", err.message);
